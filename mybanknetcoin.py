@@ -1,7 +1,25 @@
+"""
+BankNetCoin
+
+Usage:
+  banknetcoin.py serve
+  banknetcoin.py ping
+  banknetcoin.py balance <name>
+  banknetcoin.py tx <from> <to> <amount>
+  banknetcoin.py -h | --help
+
+Options:
+  -h --help     Show this screen.
+"""
+
+
 import uuid, socketserver, socket, sys
 from copy import deepcopy
 from ecdsa import SigningKey, SECP256k1
-from utils import serialize, deserialize
+from utils import serialize, deserialize, prepare_simple_tx
+from docopt import docopt
+
+from identities import user_private_key, user_public_key
 
 
 
@@ -118,6 +136,7 @@ def prepare_message(command, data):
 host = "0.0.0.0"
 port = 3006
 address = (host, port)
+bank = Bank()
 
 
 class MyTCPServer(socketserver.TCPServer):
@@ -125,37 +144,89 @@ class MyTCPServer(socketserver.TCPServer):
 
 class TCPHandler(socketserver.BaseRequestHandler):
 
+    def respond(self, command, data):
+        response = prepare_message(command, data)
+        serialized_response = serialize(response)
+        self.request.sendall(serialized_response)   
+
     def handle(self):
         message_data = self.request.recv(5000).strip()
         message = deserialize(message_data)
+        command = message["command"]
         
         print(f'got a message: {message}')
+        if command == "ping":
+            self.respond("pong", "")
 
-        if message["command"] == b"ping":
-            message = prepare_message("pong", "")
-            serialized_message = serialize(message)
-            self.request.sendall(serialized_message)   
+        if command == "balance":
+            public_key =  message["data"]
+            utxo = bank.fetch_balance(public_key)
+            self.respond("balance-response", utxo)
+        
+        if command == "utxo":
+            public_key =  message["data"]
+            balance = bank.fetch_utxo(public_key)
+            self.respond("utxo-response", balance)
+
+        if command == "tx":
+            tx = message["data"]
+            try:
+                bank.handle_tx(tx)
+                self.respond("tx-response", data="accepted")
+            except: 
+                self.respond("tx-response", data="rejected")
 
 def serve():
     server = MyTCPServer(address, TCPHandler)
     server.serve_forever()
 
-def ping():
+def send_message(command, data):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect(address)
-    message = prepare_message("ping", "")
+
+    message = prepare_message(command, data)
     serialized_message = serialize(message)
     sock.sendall(serialized_message)
+
     message_data = sock.recv(5000)
     message = deserialize(message_data)
+
     print(f"Received {message}")
 
-if __name__ == "__main__":
-    command = sys.argv[1]
+    return message
+
+def main(args):
     
-    if command == "serve":
+    if args["serve"]:
+        #Hack!
+        alice_public_key = user_public_key("alice")
+        bank.issue(1000, alice_public_key)
         serve()
-    elif command == "ping":
-        ping()
+    elif args["ping"]:
+        send_message("ping", "")
+    elif args["balance"]:
+        name = args["<name>"]
+        public_key = user_public_key(name)
+        send_message("balance", public_key)
+    elif args["tx"]:
+        sender_private_key = user_private_key(args["<from>"])
+        sender_public_key = sender_private_key.get_verifying_key()
+        recipient_public_key = user_public_key(args["<to>"])
+        amount = int(args["<amount>"])
+
+        #Fetch sender utxo
+        utxo_response = send_message("utxo", sender_public_key)
+        utxo = utxo_response["data"]
+
+        #Prepare transaction
+        tx = prepare_simple_tx(utxo, sender_private_key, recipient_public_key, amount)
+        #Send transctions to bank
+        response = send_message("tx", tx)
+        print(response)
+
     else:
         print("invalid command")
+
+if __name__ == "__main__":
+    args = docopt(__doc__)
+    main(args)

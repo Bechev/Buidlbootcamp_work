@@ -11,8 +11,7 @@ class TCPHandler(socketserver.BaseRequestHandler):
 
     def handle(self):
         message = self.request.recv(10).strip()
-        print(message)
-        print(f"got a message: {message}")
+        print(f'got a message: {message}')
 
         if message == b"ping":
             self.request.sendall(b"pong\n")
@@ -30,6 +29,7 @@ def ping():
 
 if __name__ == "__main__":
     command = sys.argv[1]
+    
     if command == "serve":
         serve()
     elif command == "ping":
